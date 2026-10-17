@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NIM — игра с фишками</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center;
+    background: radial-gradient(circle at 50% 20%, #24304a 0%, #141a29 60%, #0c1018 100%);
+    color: #e8ecf4; font-family: "Segoe UI", Arial, sans-serif;
+    padding: 24px 12px 48px;
+  }
+  h1 { font-size: 34px; letter-spacing: 8px; margin-bottom: 6px; }
+  .rules { color: #9fb0c8; font-size: 14px; margin-bottom: 18px; text-align: center; max-width: 480px; line-height: 1.5; }
+  #status { min-height: 38px; font-size: 18px; margin-bottom: 20px; padding: 8px 22px; border-radius: 20px; background: rgba(255,255,255,.07); }
+  #status.win { color: #7ee2a0; }
+  #status.lose { color: #ff8f8f; }
+  #board { display: flex; flex-direction: column; gap: 16px; }
+  .row { display: flex; gap: 14px; justify-content: center; min-height: 52px; }
+  .chip {
+    width: 50px; height: 50px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #6db3f2, #2f6fb2 60%, #1d4a7c);
+    box-shadow: 0 4px 8px rgba(0,0,0,.4), inset 0 2px 4px rgba(255,255,255,.35);
+    cursor: pointer;
+    transition: transform .25s, opacity .45s, box-shadow .25s, background .25s;
+  }
+  .chip:hover { transform: translateY(-4px); }
+  .chip.selected {
+    transform: translateY(-10px) scale(1.08);
+    background: radial-gradient(circle at 35% 30%, #ffd97a, #f2a53a 60%, #b06d12);
+    box-shadow: 0 8px 16px rgba(0,0,0,.5), inset 0 2px 4px rgba(255,255,255,.5), 0 0 12px rgba(255,190,80,.6);
+  }
+  .chip.cpu-select, .chip.cpu-select:hover { animation: pulse .55s ease-in-out infinite; cursor: default; }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); box-shadow: 0 4px 8px rgba(0,0,0,.4), inset 0 2px 4px rgba(255,255,255,.35); }
+    50% {
+      transform: scale(1.18);
+      background: radial-gradient(circle at 35% 30%, #ff9a7a, #d84a2f 60%, #8c2a12);
+      box-shadow: 0 0 18px rgba(255,110,60,.8);
+    }
+  }
+  .chip.removing { transform: translateY(70px) scale(.25) rotate(40deg); opacity: 0; pointer-events: none; }
+  #controls { margin-top: 26px; display: flex; gap: 14px; }
+  button {
+    padding: 10px 26px; font-size: 16px; border: none; border-radius: 8px; cursor: pointer;
+    background: #2f6fb2; color: #fff; transition: background .2s, transform .1s;
+  }
+  button:hover:not(:disabled) { background: #3f86d6; }
+  button:active:not(:disabled) { transform: scale(.97); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #takeBtn { background: #1f8a4c; }
+  #takeBtn:hover:not(:disabled) { background: #27ab5e; }
+</style>
+</head>
+<body>
+<h1>NIM</h1>
+<p class="rules">5 строк: 5, 4, 3, 2, 1 фишек. За ход можно взять любое количество фишек из одной строки, кликая по ним мышкой. Проигрывает тот, кто заберёт последнюю фишку.</p>
+<div id="status">Ваш ход</div>
+<div id="board"></div>
+<div id="controls">
+  <button id="takeBtn" disabled>Взять</button>
+  <button id="newGameBtn">Новая игра</button>
+</div>
+
+<script>
+const START = [5, 4, 3, 2, 1];
+const boardEl = document.getElementById('board');
+const statusEl = document.getElementById('status');
+const takeBtn = document.getElementById('takeBtn');
+const newBtn = document.getElementById('newGameBtn');
+
+let heaps, selected, selRow, busy, gameOver, token = 0;
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls || '';
+}
+
+function plural(n) {
+  const m = n % 10, h = n % 100;
+  if (m === 1 && h !== 11) return 'фишку';
+  if (m >= 2 && m <= 4 && !(h >= 12 && h <= 14)) return 'фишки';
+  return 'фишек';
+}
+
+function render() {
+  boardEl.innerHTML = '';
+  heaps.forEach((size, r) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    for (let c = 0; c < size; c++) {
+      const chip = document.createElement('div');
+      chip.className = 'chip' + (r === selRow && selected.has(c) ? ' selected' : '');
+      chip.addEventListener('click', () => clickChip(r, c));
+      row.appendChild(chip);
+    }
+    boardEl.appendChild(row);
+  });
+}
+
+function clickChip(r, c) {
+  if (busy || gameOver) return;
+  if (selRow !== r) { selRow = r; selected.clear(); }
+  if (selected.has(c)) selected.delete(c); else selected.add(c);
+  if (selected.size === 0) selRow = -1;
+  takeBtn.disabled = selected.size === 0;
+  takeBtn.textContent = selected.size ? 'Взять ' + selected.size : 'Взять';
+  render();
+}
+
+function resetTakeBtn() {
+  takeBtn.disabled = true;
+  takeBtn.textContent = 'Взять';
+}
+
+const memo = new Map();
+
+function solve(key) {
+  if (memo.has(key)) return memo.get(key);
+  const h = key.split(',').map(Number);
+  if (h.every(x => x === 0)) { memo.set(key, true); return true; }
+  let win = false;
+  for (let i = 0; i < h.length && !win; i++) {
+    for (let t = 1; t <= h[i] && !win; t++) {
+      const next = h.slice();
+      next[i] -= t;
+      if (!solve(next.join(','))) win = true;
+    }
+  }
+  memo.set(key, win);
+  return win;
+}
+
+function computerMove() {
+  for (let i = 0; i < heaps.length; i++) {
+    for (let t = 1; t <= heaps[i]; t++) {
+      const next = heaps.slice();
+      next[i] -= t;
+      if (!solve(next.join(','))) return { r: i, take: t };
+    }
+  }
+  const r = heaps.indexOf(Math.max(...heaps));
+  return { r, take: 1 };
+}
+
+function computerTurn() {
+  busy = true;
+  setStatus('Компьютер думает...');
+  const t = token;
+  setTimeout(() => {
+    if (t !== token) return;
+    const move = computerMove();
+    const chips = Array.from(boardEl.children[move.r].children).slice(-move.take);
+    chips.forEach(ch => ch.classList.add('cpu-select'));
+    setStatus('Компьютер берёт ' + move.take + ' ' + plural(move.take) + ' из строки ' + (move.r + 1));
+    setTimeout(() => {
+      if (t !== token) return;
+      chips.forEach(ch => { ch.classList.remove('cpu-select'); ch.classList.add('removing'); });
+      setTimeout(() => {
+        if (t !== token) return;
+        heaps[move.r] -= move.take;
+        render();
+        if (heaps.every(x => x === 0)) {
+          gameOver = true;
+          setStatus('Компьютер забрал последнюю фишку. Вы победили!', 'win');
+          return;
+        }
+        busy = false;
+        setStatus('Ваш ход');
+      }, 500);
+    }, 1000);
+  }, 800);
+}
+
+takeBtn.addEventListener('click', () => {
+  if (busy || gameOver || selected.size === 0) return;
+  busy = true;
+  const n = selected.size;
+  const row = selRow;
+  Array.from(boardEl.children[row].children).forEach((ch, i) => {
+    if (selected.has(i)) ch.classList.add('removing');
+  });
+  resetTakeBtn();
+  const t = token;
+  setTimeout(() => {
+    if (t !== token) return;
+    heaps[row] -= n;
+    selected.clear();
+    selRow = -1;
+    render();
+    if (heaps.every(x => x === 0)) {
+      gameOver = true;
+      setStatus('Вы забрали последнюю фишку. Вы проиграли!', 'lose');
+      return;
+    }
+    computerTurn();
+  }, 500);
+});
+
+newBtn.addEventListener('click', newGame);
+
+function newGame() {
+  token++;
+  busy = false;
+  gameOver = false;
+  heaps = START.slice();
+  selected = new Set();
+  selRow = -1;
+  resetTakeBtn();
+  setStatus('Ваш ход');
+  render();
+}
+
+newGame();
+</script>
+</body>
+</html>
